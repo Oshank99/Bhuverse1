@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D ULPIN Cadastral Viewer</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/cesiumjs/1.116/Build/Cesium/Cesium.js"></script>
+    <link href="https://ajax.googleapis.com/ajax/libs/cesiumjs/1.116/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; height: 100vh; overflow: hidden; }
+        #cesiumContainer { width: 100%; height: 100%; }
+        .panel { position: absolute; background: rgba(255,255,255,0.95); border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); z-index: 1000; backdrop-filter: blur(10px); }
+        .panel-header { padding: 12px 16px; border-bottom: 1px solid #eee; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+        .panel-content { padding: 12px 16px; max-height: 400px; overflow-y: auto; }
+        .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+        .btn-primary { background: #2563eb; color: white; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-secondary { background: #f3f4f6; color: #374151; }
+        .btn-secondary:hover { background: #e5e7eb; }
+        .btn-danger { background: #ef4444; color: white; }
+        .input { padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 13px; width: 100%; margin-bottom: 8px; }
+        .input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+        .label { font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px; display: block; }
+        .unit-card { padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 8px; cursor: pointer; transition: all 0.2s; }
+        .unit-card:hover { background: #f9fafb; border-color: #2563eb; }
+        .unit-card.selected { background: #eff6ff; border-color: #2563eb; }
+        .unit-type { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; margin-right: 8px; }
+        .type-parcel { background: #fef3c7; color: #92400e; }
+        .type-building { background: #dbeafe; color: #1e40af; }
+        .type-floor { background: #e0e7ff; color: #3730a3; }
+        .type-unit { background: #dcfce7; color: #166534; }
+        .type-utility { background: #fce7f3; color: #9d174d; }
+        .search-results { max-height: 300px; overflow-y: auto; }
+        .toolbar { top: 16px; right: 16px; width: 320px; }
+        .sidebar { top: 16px; left: 16px; bottom: 16px; width: 350px; display: flex; flex-direction: column; }
+        .info-panel { bottom: 16px; right: 16px; width: 320px; max-height: 400px; display: none; }
+        .info-panel.visible { display: block; }
+        .floor-slider { width: 100%; margin: 8px 0; }
+        .legend-item { display: flex; align-items: center; margin: 4px 0; font-size: 12px; }
+        .legend-color { width: 16px; height: 16px; border-radius: 3px; margin-right: 8px; }
+        .measurement { font-family: monospace; font-size: 12px; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div id="cesiumContainer"></div>
+    
+    <!-- Toolbar -->
+    <div class="panel toolbar">
+        <div class="panel-header">
+            <span>3D ULPIN Cadastral Viewer</span>
+            <button class="btn btn-secondary" onclick="toggleSidebar()">☰</button>
+        </div>
+        <div class="panel-content" style="padding: 8px 16px;">
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn btn-primary" onclick="searchULPIN()">🔍 Search ULPIN</button>
+                <button class="btn btn-secondary" onclick="loadSampleData()">📍 Load Sample</button>
+                <button class="btn btn-secondary" onclick="toggleMeasure()">📏 Measure</button>
+                <button class="btn btn-secondary" onclick="toggleFloorFilter()">🏢 Floor Filter</button>
+                <button class="btn btn-secondary" onclick="exportSelection()">📥 Export</button>
+            </div>
+            <div id="searchBar" style="display: none; margin-top: 8px;">
+                <input type="text" id="ulpinInput" class="input" placeholder="Enter 25-digit 3D ULPIN..." onkeypress="if(event.key==='Enter') searchULPIN()">
+            </div>
+            <div id="floorFilter" style="display: none; margin-top: 8px;">
+                <label class="label">Floor Level: <span id="floorValue">All</span></label>
+                <input type="range" id="floorSlider" class="floor-slider" min="-2" max="50" value="0" oninput="filterByFloor(this.value)">
+            </div>
+        </div>
+    </div>
+    
+    <!-- Sidebar -->
+    <div class="panel sidebar" id="sidebar">
+        <div class="panel-header">
+            <span>Layers & Search</span>
+            <button class="btn btn-secondary" onclick="toggleSidebar()">✕</button>
+        </div>
+        <div class="panel-content" style="flex: 1; display: flex; flex-direction: column;">
+            <!-- Search Results -->
+            <div>
+                <div class="label">Search Results</div>
+                <div id="searchResults" class="search-results"></div>
+            </div>
+            
+            <!-- Legend -->
+            <div style="margin-top: 16px; border-top: 1px solid #eee; padding-top: 12px;">
+                <div class="label">Layer Legend</div>
+                <div class="legend-item"><span class="legend-color" style="background: rgba(254,243,199,0.7); border: 1px solid #f59e0b;"></span>Parcels</div>
+                <div class="legend-item"><span class="legend-color" style="background: rgba(219,234,254,0.7); border: 1px solid #3b82f6;"></span>Buildings</div>
+                <div class="legend-item"><span class="legend-color" style="background: rgba(224,231,255,0.7); border: 1px solid #6366f1;"></span>Floors</div>
+                <div class="legend-item"><span class="legend-color" style="background: rgba(220,252,231,0.7); border: 1px solid #22c55e;"></span>Units</div>
+                <div class="legend-item"><span class="legend-color" style="background: rgba(252,231,243,0.7); border: 1px solid #ec4899;"></span>Utilities</div>
+            </div>
+            
+            <!-- Layer Toggles -->
+            <div style="margin-top: 16px; border-top: 1px solid #eee; padding-top: 12px;">
+                <div class="label">Visible Layers</div>
+                <label style="display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer;">
+                    <input type="checkbox" id="showParcels" checked onchange="toggleLayer('parcels')"> Parcels
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer;">
+                    <input type="checkbox" id="showBuildings" checked onchange="toggleLayer('buildings')"> Buildings
+                </label>
+                <label style="display: flex, align-items: center; gap: 8px; margin: 4px 0; cursor: pointer;">
+                    <input type="checkbox" id="showFloors" checked onchange="toggleLayer('floors')"> Floors
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer;">
+                    <input type="checkbox" id="showUnits" checked onchange="toggleLayer('units')"> Units
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer;">
+                    <input type="checkbox" id="showUtilities" onchange="toggleLayer('utilities')"> Utilities
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer;">
+                    <input type="checkbox" id="showBoundaries" checked onchange="toggleLayer('boundaries')"> Boundaries
+                </label>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Info Panel -->
+    <div class="panel info-panel" id="infoPanel">
+        <div class="panel-header">
+            <span id="infoTitle">Unit Details</span>
+            <button class="btn btn-secondary" onclick="closeInfoPanel()">✕</button>
+        </div>
+        <div class="panel-content" id="infoContent"></div>
+    </div>
+
+    <script>
+        // ============================================================================
+        // CESIUM INITIALIZATION
+        // ============================================================================
+        
+        const viewer = new Cesium.Viewer('cesiumContainer', {
+            terrainProvider: Cesium.createWorldTerrain(),
+            imageryProvider: new Cesium.IonImageryProvider({ assetId: 3954 }),
+            baseLayerPicker: false,
+            geocoder: false,
+            homeButton: true,
+            sceneModePicker: true,
+            navigationHelpButton: false,
+            animation: false,
+            timeline: false,
+            fullscreenButton: true,
+            vrButton: false,
+            infoBox: false,
+            selectionIndicator: false,
+            shadows: true
+        });
+        
+        viewer.scene.globe.enableLighting = true;
+        viewer.scene.skyAtmosphere.show = true;
+        viewer.camera.setView({
+            destination: Cesium.Cartesian3.fromDegrees(77.2090, 28.6139, 5000),
+            orientation: { heading: 0, pitch: -Cesium.Math.PI_OVER_FOUR, roll: 0 }
+        });
+        
+        // Entity collections
+        const parcels = new Cesium.EntityCollection();
+        const buildings = new Cesium.EntityCollection();
+        const floors = new Cesium.EntityCollection();
+        const units = new Cesium.EntityCollection();
+        const utilities = new Cesium.EntityCollection();
+        
+        viewer.entities.add(parcels);
+        viewer.entities.add(buildings);
+        viewer.entities.add(floors);
+        viewer.entities.add(units);
+        viewer.entities.add(utilities);
+        
+        // Materials
+        const materials = {
+            parcel: Cesium.Color.fromCssColorString('#fef3c7').withAlpha(0.5),
+            building: Cesium.Color.fromCssColorString('#dbeafe').withAlpha(0.6),
+            floor: Cesium.Color.fromCssColorString('#e0e7ff').withAlpha(0.5),
+            unit: Cesium.Color.fromCssColorString('#dcfce7').withAlpha(0.7),
+            utility: Cesium.Color.fromCssColorString('#fce7f3').withAlpha(0.7),
+            outline: Cesium.Color.fromCssColorString('#374151')
+        };
+        
+        let selectedEntity = null;
+        let measureHandler = null;
+        let isMeasuring = false;
+        
+        // ============================================================================
+        // DATA LOADING
+        // ============================================================================
+        
+        async function loadSampleData() {
+            // Generate sample building
+            const response = await fetch('/buildings/extrude', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    building_id: 'SAMPLE-001',
+                    footprint_wkt: 'POLYGON((77.2085 28.6135, 77.2095 28.6135, 77.2095 28.6145, 77.2085 28.6145, 77.2085 28.6135))',
+                    num_floors: 5,
+                    floor_height: 3.0,
+                    ground_z: 210.0,
+                    unit_layout: 'grid'
+                })
+            });
+            
+            const data = await response.json();
+            renderUnits(data.units);
+            viewer.camera.flyTo({
+                destination: Cesium.Cartesian3.fromDegrees(77.2090, 28.6140, 300)
+            });
+        }
+        
+        function renderUnits(unitsData) {
+            clearAll();
+            
+            unitsData.forEach(u => {
+                const entity = createEntityFromUnit(u);
+                if (u.type === 'parcel') parcels.add(entity);
+                else if (u.type === 'building') buildings.add(entity);
+                else if (u.type === 'floor') floors.add(entity);
+                else if (u.type === 'unit') units.add(entity);
+                else utilities.add(entity);
+            });
+        }
+        
+        function createEntityFromUnit(unit) {
+            // Parse POLYHEDRALSURFACE WKT (simplified - uses polygon extrusion)
+            const positions = parsePolyhedralSurface(unit.geometry_wkt || unit.geometry);
+            
+            if (!positions || positions.length === 0) return null;
+            
+            const color = materials[unit.type] || Cesium.Color.WHITE.withAlpha(0.5);
+            
+            return new Cesium.Entity({
+                id: unit.uln || unit.suid,
+                name: unit.label,
+                polygon: {
+                    hierarchy: positions[0], // Bottom face
+                    material: color,
+                    outline: true,
+                    outlineColor: materials.outline,
+                    outlineWidth: 2,
+                    extrudedHeight: unit.z_max,
+                    height: unit.z_min,
+                    perPositionHeight: true
+                },
+                properties: {
+                    uln: unit.uln,
+                    label: unit.label,
+                    type: unit.type,
+                    z_min: unit.z_min,
+                    z_max: unit.z_max,
+                    floor_level: unit.floor_level,
+                    suid: unit.suid
+                }
+            });
+        }
+        
+        function parsePolyhedralSurface(wkt) {
+            // Simplified parser for POLYHEDRALSURFACE Z
+            if (!wkt || wkt.includes('EMPTY')) return null;
+            
+            // Extract coordinates from WKT
+            const coordMatches = wkt.match(/\(\(([^)]+)\)\)/g);
+            if (!coordMatches) return [];
+            
+            const positions = [];
+            for (const match of coordMatches) {
+                const coords = match.replace(/[()]/g, '').split(',').map(s => s.trim());
+                const ring = [];
+                for (const coord of coords) {
+                    const parts = coord.split(/\s+/);
+                    if (parts.length >= 3) {
+                        ring.push(Cesium.Cartesian3.fromDegrees(
+                            parseFloat(parts[0]),
+                            parseFloat(parts[1]),
+                            parseFloat(parts[2])
+                        ));
+                    }
+                }
+                if (ring.length >= 3) positions.push(ring);
+            }
+            return positions;
+        }
+        
+        function clearAll() {
+            parcels.removeAll();
+            buildings.removeAll();
+            floors.removeAll();
+            units.removeAll();
+            utilities.removeAll();
+        }
+        
+        // ============================================================================
+        // SEARCH
+        // ============================================================================
+        
+        async function searchULPIN() {
+            const ulpin = document.getElementById('ulpinInput').value.trim();
+            if (!ulpin) return;
+            
+            const response = await fetch(`/collections/spatial_units/items?uln=${ulpin}&limit=10`);
+            const data = await response.json();
+            
+            displaySearchResults(data.features);
+        }
+        
+        function displaySearchResults(features) {
+            const container = document.getElementById('searchResults');
+            container.innerHTML = '';
+            
+            if (features.length === 0) {
+                container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">No results found</div>';
+                return;
+            }
+            
+            features.forEach(f => {
+                const props = f.properties;
+                const card = document.createElement('div');
+                card.className = 'unit-card';
+                card.onclick = () => selectUnit(props.uln, f.geometry);
+                card.innerHTML = `
+                    <span class="unit-type type-${props.type}">${props.type.toUpperCase()}</span>
+                    <strong>${props.label || props.uln}</strong><br>
+                    <small style="color: #6b7280;">ULPIN: ${props.uln}</small><br>
+                    <small>Floor: ${props.floor_level} | Z: ${props.z_min.toFixed(1)}-${props.z_max.toFixed(1)}m</small>
+                `;
+                container.appendChild(card);
+            });
+        }
+        
+        function selectUnit(ulpin, geometry) {
+            // Find entity
+            let found = null;
+            [parcels, buildings, floors, units, utilities].forEach(c => {
+                const e = c.getById(ulpin);
+                if (e) found = e;
+            });
+            
+            if (found) {
+                if (selectedEntity) {
+                    selectedEntity.polygon.outlineWidth = 2;
+                }
+                selectedEntity = found;
+                found.polygon.outlineWidth = 4;
+                found.polygon.outlineColor = Cesium.Color.fromCssColorString('#2563eb');
+                
+                viewer.camera.flyTo({
+                    destination: found.polygon.hierarchy.getValue(Cesium.JulianDate.now())[0],
+                    orientation: { heading: 0, pitch: -Cesium.Math.PI_OVER_THREE, roll: 0 }
+                });
+                
+                showInfoPanel(found.properties);
+            }
+        }
+        
+        function showInfoPanel(props) {
+            const panel = document.getElementById('infoPanel');
+            const content = document.getElementById('infoContent');
+            const title = document.getElementById('infoTitle');
+            
+            title.textContent = `${props.type.toUpperCase()}: ${props.label}`;
+            content.innerHTML = `
+                <div style="font-size: 13px; line-height: 1.8;">
+                    <div><strong>3D ULPIN:</strong> <code style="font-size: 11px; background: #f3f4f6; padding: 2px 6px; border-radius: 3px;">${props.uln}</code></div>
+                    <div><strong>Type:</strong> <span class="unit-type type-${props.type}">${props.type}</span></div>
+                    <div><strong>Floor Level:</strong> ${props.floor_level}</div>
+                    <div><strong>Elevation:</strong> ${props.z_min.toFixed(2)}m - ${props.z_max.toFixed(2)}m</div>
+                    <div><strong>Height:</strong> ${(props.z_max - props.z_min).toFixed(2)}m</div>
+                    <div><strong>Parent ULPIN:</strong> ${props.parent_ulpin || 'None'}</div>
+                    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #eee;">
+                        <button class="btn btn-primary" onclick="flyToUnit('${props.uln}')">🚀 Fly To</button>
+                        <button class="btn btn-secondary" onclick="showHierarchy('${props.uln}')">📊 Hierarchy</button>
+                        <button class="btn btn-secondary" onclick="validateUnit('${props.uln}')">✓ Validate</button>
+                    </div>
+                </div>
+            `;
+            
+            panel.classList.add('visible');
+        }
+        
+        function closeInfoPanel() {
+            document.getElementById('infoPanel').classList.remove('visible');
+        }
+        
+        async function showHierarchy(ulpin) {
+            const response = await fetch(`/ulpin/hierarchy/${ulpin}`);
+            const data = await response.json();
+            
+            const content = document.getElementById('infoContent');
+            content.innerHTML += `
+                <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee;">
+                    <strong>Hierarchy:</strong>
+                    <div style="font-size: 12px; margin-top: 8px;">
+                        ${data.hierarchy.map(h => `
+                            <div style="padding: 4px 0; border-left: 2px solid #2563eb; padding-left: 8px;">
+                                <span class="unit-type type-${h.type}">${h.type}</span>
+                                ${h.label} (Level ${h.floor_level})
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        async function validateUnit(ulpin) {
+            const response = await fetch('/topology/validate/database', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ parcel_ulpin: ulpin })
+            });
+            const data = await response.json();
+            
+            alert(`Topology Validation: ${data.summary.issues} issues found`);
+        }
+        
+        function flyToUnit(ulpin) {
+            let found = null;
+            [parcels, buildings, floors, units, utilities].forEach(c => {
+                const e = c.getById(ulpin);
+                if (e) found = e;
+            });
+            
+            if (found) {
+                viewer.camera.flyTo({
+                    destination: found.polygon.hierarchy.getValue(Cesium.JulianDate.now())[0],
+                    orientation: { heading: 0, pitch: -Cesium.Math.PI_OVER_THREE, roll: 0 }
+                });
+            }
+        }
+        
+        // ============================================================================
+        // LAYER TOGGLES
+        // ============================================================================
+        
+        function toggleLayer(layer) {
+            const checkbox = document.getElementById(`show${layer.charAt(0).toUpperCase() + layer.slice(1)}`);
+            const collection = window[layer];
+            if (collection) {
+                collection.show = checkbox.checked;
+            }
+        }
+        
+        // ============================================================================
+        // FLOOR FILTER
+        // ============================================================================
+        
+        function toggleFloorFilter() {
+            const filter = document.getElementById('floorFilter');
+            filter.style.display = filter.style.display === 'none' ? 'block' : 'none';
+        }
+        
+        function filterByFloor(value) {
+            document.getElementById('floorValue').textContent = value == 0 ? 'All' : `Level ${value}`;
+            
+            const targetLevel = parseInt(value);
+            [floors, units].forEach(collection => {
+                collection.values.forEach(entity => {
+                    if (entity.properties.floor_level) {
+                        const level = entity.properties.floor_level.getValue(Cesium.JulianDate.now());
+                        entity.show = (targetLevel === 0) || (level === targetLevel);
+                    }
+                });
+            });
+        }
+        
+        // ============================================================================
+        // MEASUREMENT
+        // ============================================================================
+        
+        function toggleMeasure() {
+            isMeasuring = !isMeasuring;
+            const btn = event.target;
+            
+            if (isMeasuring) {
+                btn.textContent = '📏 Stop Measure';
+                btn.classList.add('btn-primary');
+                btn.classList.remove('btn-secondary');
+                startMeasure();
+            } else {
+                btn.textContent = '📏 Measure';
+                btn.classList.remove('btn-primary');
+                btn.classList.add('btn-secondary');
+                stopMeasure();
+            }
+        }
+        
+        function startMeasure() {
+            const positions = [];
+            const line = new Cesium.PolylineGraphics({
+                width: 3,
+                material: Cesium.Color.fromCssColorString('#2563eb'),
+                clampToGround: false
+            });
+            
+            const measureEntity = new Cesium.Entity({ polyline: line });
+            viewer.entities.add(measureEntity);
+            
+            measureHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+            
+            measureHandler.setInputAction((movement) => {
+                const cartesian = viewer.scene.camera.pickEllipsoid(movement.position, viewer.scene.globe.ellipsoid);
+                if (cartesian) {
+                    positions.push(cartesian);
+                    line.positions = positions;
+                    
+                    if (positions.length >= 2) {
+                        const distance = Cesium.Cartesian3.distance(positions[positions.length-2], positions[positions.length-1]);
+                        showMeasurement(distance);
+                    }
+                }
+            }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+            
+            measureHandler.setInputAction((movement) => {
+                if (positions.length > 0) {
+                    const cartesian = viewer.scene.camera.pickEllipsoid(movement.endPosition, viewer.scene.globe.ellipsoid);
+                    if (cartesian) {
+                        const tempPositions = [...positions, cartesian];
+                        line.positions = tempPositions;
+                    }
+                }
+            }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+        }
+        
+        function stopMeasure() {
+            if (measureHandler) {
+                measureHandler.destroy();
+                measureHandler = null;
+            }
+        }
+        
+        function showMeasurement(distance) {
+            // Show measurement tooltip
+        }
+        
+        // ============================================================================
+        // EXPORT
+        // ============================================================================
+        
+        function exportSelection() {
+            if (!selectedEntity) {
+                alert('Select a unit first');
+                return;
+            }
+            
+            const props = selectedEntity.properties;
+            const exportData = {
+                uln: props.uln.getValue(Cesium.JulianDate.now()),
+                label: props.label.getValue(Cesium.JulianDate.now()),
+                type: props.type.getValue(Cesium.JulianDate.now()),
+                floor_level: props.floor_level.getValue(Cesium.JulianDate.now()),
+                z_min: props.z_min.getValue(Cesium.JulianDate.now()),
+                z_max: props.z_max.getValue(Cesium.JulianDate.now())
+            };
+            
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${exportData.uln}.json`;
+            a.click();
+        }
+        
+        // ============================================================================
+        // UI HELPERS
+        // ============================================================================
+        
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.style.display = sidebar.style.display === 'none' ? 'flex' : 'none';
+        }
+        
+        // Initialize
+        loadSampleData();
+    </script>
+</body>
+</html>
